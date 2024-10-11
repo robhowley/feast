@@ -223,7 +223,7 @@ def get_app(
 
     @app.get("/health")
     def health():
-        if store.registry.proto() is None:
+        if registry_proto is None:
             return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response(status_code=status.HTTP_200_OK)
