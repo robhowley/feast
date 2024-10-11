@@ -154,6 +154,7 @@ def get_app(
     )
 
     if use_async_read:
+
         @_post_get_online_features
         async def get_online_features(body=Depends(get_body)):
             response = await store.get_online_features_async(
@@ -166,6 +167,7 @@ def get_app(
             )
 
     else:
+
         @_post_get_online_features
         def get_online_features(body=Depends(get_body)):
             response_proto = store.get_online_features(
@@ -176,7 +178,6 @@ def get_app(
             return MessageToDict(
                 response_proto, preserving_proto_field_name=True, float_precision=18
             )
-
 
     @app.post("/push", dependencies=[Depends(inject_user_details)])
     def push(body=Depends(get_body)):

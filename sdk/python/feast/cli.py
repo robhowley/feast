@@ -936,7 +936,7 @@ def serve_command(
     metrics: bool,
     keep_alive_timeout: int,
     registry_ttl_sec: int = 5,
-    async_read: bool = False
+    async_read: bool = False,
 ):
     """Start a feature server locally on a given port."""
     store = create_feature_store(ctx)
