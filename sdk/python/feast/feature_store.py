@@ -1799,6 +1799,7 @@ class FeatureStore:
         metrics: bool = False,
         keep_alive_timeout: int = 30,
         registry_ttl_sec: int = 2,
+        use_async_read: bool = False,
     ) -> None:
         """Start the feature consumption server locally on a given port."""
         type_ = type_.lower()
@@ -1816,6 +1817,7 @@ class FeatureStore:
             metrics=metrics,
             keep_alive_timeout=keep_alive_timeout,
             registry_ttl_sec=registry_ttl_sec,
+            use_async_read=use_async_read,
         )
 
     def get_feature_server_endpoint(self) -> Optional[str]:

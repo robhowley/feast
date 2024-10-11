@@ -4,7 +4,7 @@ import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import pandas as pd
 import psutil
@@ -68,9 +68,50 @@ class MaterializeIncrementalRequest(BaseModel):
     feature_views: Optional[List[str]] = None
 
 
+def _prepare_get_online_features_request(store, body) -> dict[str, Any]:
+    body = json.loads(body)
+    full_feature_names = body.get("full_feature_names", False)
+    entity_rows = body["entities"]
+    # Initialize parameters for FeatureStore.get_online_features(...) call
+    if "feature_service" in body:
+        feature_service = store.get_feature_service(
+            body["feature_service"], allow_cache=True
+        )
+        assert_permissions(
+            resource=feature_service, actions=[AuthzedAction.READ_ONLINE]
+        )
+        features = feature_service
+    else:
+        features = body["features"]
+        all_feature_views, all_on_demand_feature_views = (
+            utils._get_feature_views_to_use(
+                store.registry,
+                store.project,
+                features,
+                allow_cache=True,
+                hide_dummy_entity=False,
+            )
+        )
+        for feature_view in all_feature_views:
+            assert_permissions(
+                resource=feature_view, actions=[AuthzedAction.READ_ONLINE]
+            )
+        for od_feature_view in all_on_demand_feature_views:
+            assert_permissions(
+                resource=od_feature_view, actions=[AuthzedAction.READ_ONLINE]
+            )
+
+    return dict(
+        features=features,
+        entity_rows=entity_rows,
+        full_feature_names=full_feature_names,
+    )
+
+
 def get_app(
     store: "feast.FeatureStore",
     registry_ttl_sec: int = DEFAULT_FEATURE_SERVER_REGISTRY_TTL,
+    use_async_read: bool = False,
 ):
     proto_json.patch()
     # Asynchronously refresh registry, notifying shutdown and canceling the active timer if the app is shutting down
@@ -107,53 +148,35 @@ def get_app(
     async def get_body(request: Request):
         return await request.body()
 
-    @app.post(
+    _post_get_online_features = app.post(
         "/get-online-features",
         dependencies=[Depends(inject_user_details)],
     )
-    def get_online_features(body=Depends(get_body)):
-        body = json.loads(body)
-        full_feature_names = body.get("full_feature_names", False)
-        entity_rows = body["entities"]
-        # Initialize parameters for FeatureStore.get_online_features(...) call
-        if "feature_service" in body:
-            feature_service = store.get_feature_service(
-                body["feature_service"], allow_cache=True
-            )
-            assert_permissions(
-                resource=feature_service, actions=[AuthzedAction.READ_ONLINE]
-            )
-            features = feature_service
-        else:
-            features = body["features"]
-            all_feature_views, all_on_demand_feature_views = (
-                utils._get_feature_views_to_use(
-                    store.registry,
-                    store.project,
-                    features,
-                    allow_cache=True,
-                    hide_dummy_entity=False,
-                )
-            )
-            for feature_view in all_feature_views:
-                assert_permissions(
-                    resource=feature_view, actions=[AuthzedAction.READ_ONLINE]
-                )
-            for od_feature_view in all_on_demand_feature_views:
-                assert_permissions(
-                    resource=od_feature_view, actions=[AuthzedAction.READ_ONLINE]
-                )
 
-        response_proto = store.get_online_features(
-            features=features,
-            entity_rows=entity_rows,
-            full_feature_names=full_feature_names,
-        ).proto
+    if use_async_read:
+        @_post_get_online_features
+        async def get_online_features(body=Depends(get_body)):
+            response = await store.get_online_features_async(
+                **_prepare_get_online_features_request(store, body)
+            )
 
-        # Convert the Protobuf object to JSON and return it
-        return MessageToDict(
-            response_proto, preserving_proto_field_name=True, float_precision=18
-        )
+            # Convert the Protobuf object to JSON and return it
+            return MessageToDict(
+                response.proto, preserving_proto_field_name=True, float_precision=18
+            )
+
+    else:
+        @_post_get_online_features
+        def get_online_features(body=Depends(get_body)):
+            response_proto = store.get_online_features(
+                **_prepare_get_online_features_request(store, body)
+            ).proto
+
+            # Convert the Protobuf object to JSON and return it
+            return MessageToDict(
+                response_proto, preserving_proto_field_name=True, float_precision=18
+            )
+
 
     @app.post("/push", dependencies=[Depends(inject_user_details)])
     def push(body=Depends(get_body)):
@@ -276,6 +299,7 @@ if sys.platform != "win32":
             self._app = get_app(
                 store=store,
                 registry_ttl_sec=options["registry_ttl_sec"],
+                use_async_read=options["use_async_read"],
             )
             self._options = options
             super().__init__()
@@ -316,6 +340,7 @@ def start_server(
     keep_alive_timeout: int,
     registry_ttl_sec: int,
     metrics: bool,
+    use_async_read: bool = False,
 ):
     if metrics:
         logger.info("Starting Prometheus Server")
@@ -347,9 +372,10 @@ def start_server(
             workers=workers,
             keepalive=keep_alive_timeout,
             registry_ttl_sec=registry_ttl_sec,
+            use_async_read=use_async_read,
         ).run()
     else:
         import uvicorn
 
-        app = get_app(store, registry_ttl_sec)
+        app = get_app(store, registry_ttl_sec, use_async_read=use_async_read)
         uvicorn.run(app, host=host, port=port, access_log=(not no_access_log))

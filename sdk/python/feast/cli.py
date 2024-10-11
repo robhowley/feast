@@ -918,6 +918,13 @@ def init_command(project_directory, minimal: bool, template: str):
     show_default=True,
     help="Enable the Metrics Server",
 )
+@click.option(
+    "--async-read",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Use async retrieval of features from the online datastore",
+)
 @click.pass_context
 def serve_command(
     ctx: click.Context,
@@ -929,6 +936,7 @@ def serve_command(
     metrics: bool,
     keep_alive_timeout: int,
     registry_ttl_sec: int = 5,
+    async_read: bool = False
 ):
     """Start a feature server locally on a given port."""
     store = create_feature_store(ctx)
@@ -942,6 +950,7 @@ def serve_command(
         metrics=metrics,
         keep_alive_timeout=keep_alive_timeout,
         registry_ttl_sec=registry_ttl_sec,
+        use_async_read=async_read,
     )
 
 
