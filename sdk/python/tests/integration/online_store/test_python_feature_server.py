@@ -20,7 +20,9 @@ from tests.integration.feature_repos.universal.entities import (
 
 @pytest.mark.integration
 @pytest.mark.universal_online_stores
-def test_get_online_features(python_fs_client):
+@pytest.mark.parametrize("use_async", [(False,), (True,)])
+def test_get_online_features(use_async, python_fs_client_factory):
+    python_fs_client = python_fs_client_factory(use_async_read=use_async)
     request_data_dict = {
         "features": [
             "driver_stats:conv_rate",
@@ -87,7 +89,8 @@ def test_push(python_fs_client):
 
 @pytest.mark.integration
 @pytest.mark.universal_online_stores
-def test_push_source_does_not_exist(python_fs_client):
+def test_push_source_does_not_exist(python_fs_client_factory):
+    python_fs_client = python_fs_client_factory()
     initial_temp = _get_temperatures_from_feature_server(
         python_fs_client, location_ids=[1]
     )[0]
@@ -128,14 +131,16 @@ def _get_temperatures_from_feature_server(client, location_ids: List[int]):
 
 
 @pytest.fixture
-def python_fs_client(environment, universal_data_sources, request):
-    fs = environment.feature_store
-    entities, datasets, data_sources = universal_data_sources
-    feature_views = construct_universal_feature_views(data_sources)
-    feast_objects: List[FeastObject] = []
-    feast_objects.extend(feature_views.values())
-    feast_objects.extend([driver(), customer(), location()])
-    fs.apply(feast_objects)
-    fs.materialize(environment.start_date, environment.end_date)
-    client = TestClient(get_app(fs))
-    yield client
+def python_fs_client_factory(environment, universal_data_sources):
+    def _(**app_kwargs):
+        fs = environment.feature_store
+        entities, datasets, data_sources = universal_data_sources
+        feature_views = construct_universal_feature_views(data_sources)
+        feast_objects: List[FeastObject] = []
+        feast_objects.extend(feature_views.values())
+        feast_objects.extend([driver(), customer(), location()])
+        fs.apply(feast_objects)
+        fs.materialize(environment.start_date, environment.end_date)
+        return TestClient(get_app(fs, **app_kwargs))
+
+    return _
