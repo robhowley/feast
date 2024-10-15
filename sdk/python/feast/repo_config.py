@@ -163,8 +163,8 @@ class RepoConfig(FeastBaseModel):
         provider account, as long as they have different project ids.
     """
 
-    provider: StrictStr = "local"
-    """ str: local or gcp or aws """
+    provider: Optional[str] = "local"
+    """ str (deprecated field): local or gcp or aws """
 
     registry_config: Any = Field(alias="registry", default="data/registry.db")
     """ Configures the registry.

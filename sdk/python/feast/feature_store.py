@@ -65,7 +65,8 @@ from feast.inference import (
     update_feature_views_with_inferred_features_and_entities,
 )
 from feast.infra.infra_object import Infra
-from feast.infra.provider import Provider, RetrievalJob, get_provider
+from feast.infra.provider import Provider
+from feast.infra.offline_stores.offline_store import RetrievalJob
 from feast.infra.registry.base_registry import BaseRegistry
 from feast.infra.registry.registry import Registry
 from feast.infra.registry.sql import SqlRegistry
@@ -167,7 +168,7 @@ class FeatureStore:
                 auth_config=self.config.auth_config,
             )
 
-        self._provider = get_provider(self.config)
+        self._provider = Provider(self.config)
 
     def version(self) -> str:
         """Returns the version of the current Feast SDK/CLI."""

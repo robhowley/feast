@@ -1,50 +1,133 @@
-from abc import ABC, abstractmethod
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import pandas as pd
-import pyarrow
+import pyarrow as pa
 from tqdm import tqdm
 
-from feast import FeatureService, errors
+from feast import OnDemandFeatureView, importer
 from feast.base_feature_view import BaseFeatureView
+from feast.batch_feature_view import BatchFeatureView
 from feast.data_source import DataSource
 from feast.entity import Entity
+from feast.feature_logging import FeatureServiceLoggingSource
+from feast.feature_service import FeatureService
 from feast.feature_view import FeatureView
-from feast.importer import import_class
-from feast.infra.infra_object import Infra
+from feast.infra.infra_object import Infra, InfraObject
+from feast.infra.materialization.batch_materialization_engine import (
+    BatchMaterializationEngine,
+    MaterializationJobStatus,
+    MaterializationTask,
+)
 from feast.infra.offline_stores.offline_store import RetrievalJob
+from feast.infra.offline_stores.offline_utils import get_offline_store_from_config
+from feast.infra.online_stores.helpers import get_online_store_from_config
+
 from feast.infra.registry.base_registry import BaseRegistry
-from feast.on_demand_feature_view import OnDemandFeatureView
 from feast.online_response import OnlineResponse
 from feast.protos.feast.core.Registry_pb2 import Registry as RegistryProto
 from feast.protos.feast.types.EntityKey_pb2 import EntityKey as EntityKeyProto
 from feast.protos.feast.types.Value_pb2 import RepeatedValue
 from feast.protos.feast.types.Value_pb2 import Value as ValueProto
-from feast.repo_config import RepoConfig
+from feast.repo_config import BATCH_ENGINE_CLASS_FOR_TYPE, RepoConfig
 from feast.saved_dataset import SavedDataset
+from feast.stream_feature_view import StreamFeatureView
+from feast.utils import (
+    _convert_arrow_to_proto,
+    _run_pyarrow_field_mapping,
+    make_tzaware,
+)
 
-PROVIDERS_CLASS_FOR_TYPE = {
-    "gcp": "feast.infra.passthrough_provider.PassthroughProvider",
-    "aws": "feast.infra.passthrough_provider.PassthroughProvider",
-    "local": "feast.infra.passthrough_provider.PassthroughProvider",
-    "azure": "feast.infra.passthrough_provider.PassthroughProvider",
-}
+DEFAULT_BATCH_SIZE = 10_000
 
 
-class Provider(ABC):
+class Provider:
     """
-    A provider defines an implementation of a feature store object. It orchestrates the various
-    components of a feature store, such as the offline store, online store, and materialization
-    engine. It is configured through a RepoConfig object.
+    The provider orchestrates the various components of a feature store, such as the offline store, online store,
+    and materialization engine. It is configured through a RepoConfig object. All operations are delegated to the
+    underlying online and offline stores.
     """
 
-    @abstractmethod
     def __init__(self, config: RepoConfig):
-        pass
+        self.repo_config = config
+        self._offline_store = None
+        self._online_store = None
+        self._batch_engine: Optional[BatchMaterializationEngine] = None
 
-    @abstractmethod
+    @property
+    def online_store(self):
+        if not self._online_store and self.repo_config.online_store:
+            self._online_store = get_online_store_from_config(
+                self.repo_config.online_store
+            )
+        return self._online_store
+
+    @property
+    def offline_store(self):
+        if not self._offline_store:
+            self._offline_store = get_offline_store_from_config(
+                self.repo_config.offline_store
+            )
+        return self._offline_store
+
+    @property
+    def batch_engine(self) -> BatchMaterializationEngine:
+        if self._batch_engine:
+            return self._batch_engine
+        else:
+            engine_config = self.repo_config.batch_engine_config
+            config_is_dict = False
+            if isinstance(engine_config, str):
+                engine_config_type = engine_config
+            elif isinstance(engine_config, Dict):
+                if "type" not in engine_config:
+                    raise ValueError("engine_config needs to have a `type` specified.")
+                engine_config_type = engine_config["type"]
+                config_is_dict = True
+            else:
+                raise RuntimeError(
+                    f"Invalid config type specified for batch_engine: {type(engine_config)}"
+                )
+
+            if engine_config_type in BATCH_ENGINE_CLASS_FOR_TYPE:
+                engine_config_type = BATCH_ENGINE_CLASS_FOR_TYPE[engine_config_type]
+            engine_module, engine_class_name = engine_config_type.rsplit(".", 1)
+            engine_class = importer.import_class(engine_module, engine_class_name)
+
+            if config_is_dict:
+                _batch_engine = engine_class(
+                    repo_config=self.repo_config,
+                    offline_store=self.offline_store,
+                    online_store=self.online_store,
+                    **engine_config,
+                )
+            else:
+                _batch_engine = engine_class(
+                    repo_config=self.repo_config,
+                    offline_store=self.offline_store,
+                    online_store=self.online_store,
+                )
+            self._batch_engine = _batch_engine
+            return _batch_engine
+
+    def plan_infra(
+        self, config: RepoConfig, desired_registry_proto: RegistryProto
+    ) -> Infra:
+        """
+        Returns the Infra required to support the desired registry.
+
+        Args:
+            config: The RepoConfig for the current FeatureStore.
+            desired_registry_proto: The desired registry, in proto form.
+        """
+        infra = Infra()
+        if self.online_store:
+            infra_objects: List[InfraObject] = self.online_store.plan(
+                config, desired_registry_proto
+            )
+            infra.infra_objects += infra_objects
+        return infra
+
     def update_infra(
         self,
         project: str,
@@ -68,27 +151,31 @@ class Provider(ABC):
             partial: If true, tables_to_delete and tables_to_keep are not exhaustive lists, so
                 infrastructure corresponding to other feature views should be not be touched.
         """
-        pass
+        # Call update only if there is an online store
+        if self.online_store:
+            self.online_store.update(
+                config=self.repo_config,
+                tables_to_delete=tables_to_delete,
+                tables_to_keep=tables_to_keep,
+                entities_to_keep=entities_to_keep,
+                entities_to_delete=entities_to_delete,
+                partial=partial,
+            )
+        if self.batch_engine:
+            self.batch_engine.update(
+                project,
+                tables_to_delete,
+                tables_to_keep,
+                entities_to_delete,
+                entities_to_keep,
+            )
 
-    def plan_infra(
-        self, config: RepoConfig, desired_registry_proto: RegistryProto
-    ) -> Infra:
-        """
-        Returns the Infra required to support the desired registry.
-
-        Args:
-            config: The RepoConfig for the current FeatureStore.
-            desired_registry_proto: The desired registry, in proto form.
-        """
-        return Infra()
-
-    @abstractmethod
     def teardown_infra(
         self,
         project: str,
         tables: Sequence[FeatureView],
         entities: Sequence[Entity],
-    ):
+    ) -> None:
         """
         Tears down all cloud resources for the specified set of Feast objects.
 
@@ -97,13 +184,15 @@ class Provider(ABC):
             tables: Feature views whose corresponding infrastructure should be deleted.
             entities: Entities whose corresponding infrastructure should be deleted.
         """
-        pass
+        if self.online_store:
+            self.online_store.teardown(self.repo_config, tables, entities)
+        if self.batch_engine:
+            self.batch_engine.teardown_infra(project, tables, entities)
 
-    @abstractmethod
     def online_write_batch(
         self,
         config: RepoConfig,
-        table: FeatureView,
+        table: Union[FeatureView, BaseFeatureView, OnDemandFeatureView],
         data: List[
             Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
         ],
@@ -123,7 +212,139 @@ class Provider(ABC):
             progress: Function to be called once a batch of rows is written to the online store, used
                 to show progress.
         """
-        pass
+        if self.online_store:
+            self.online_store.online_write_batch(config, table, data, progress)
+
+    def offline_write_batch(
+        self,
+        config: RepoConfig,
+        feature_view: FeatureView,
+        data: pa.Table,
+        progress: Optional[Callable[[int], Any]],
+    ) -> None:
+        if self.offline_store:
+            self.offline_store.__class__.offline_write_batch(
+                config, feature_view, data, progress
+            )
+
+    def online_read(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_keys: List[EntityKeyProto],
+        requested_features: Optional[List[str]] = None,
+    ) -> List:
+        result = []
+        if self.online_store:
+            result = self.online_store.online_read(
+                config, table, entity_keys, requested_features
+            )
+        return result
+
+    def get_online_features(
+        self,
+        config: RepoConfig,
+        features: Union[List[str], FeatureService],
+        entity_rows: Union[
+            List[Dict[str, Any]],
+            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
+        ],
+        registry: BaseRegistry,
+        project: str,
+        full_feature_names: bool = False,
+    ) -> OnlineResponse:
+        return self.online_store.get_online_features(
+            config=config,
+            features=features,
+            entity_rows=entity_rows,
+            registry=registry,
+            project=project,
+            full_feature_names=full_feature_names,
+        )
+
+    async def get_online_features_async(
+        self,
+        config: RepoConfig,
+        features: Union[List[str], FeatureService],
+        entity_rows: Union[
+            List[Dict[str, Any]],
+            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
+        ],
+        registry: BaseRegistry,
+        project: str,
+        full_feature_names: bool = False,
+    ) -> OnlineResponse:
+        return await self.online_store.get_online_features_async(
+            config=config,
+            features=features,
+            entity_rows=entity_rows,
+            registry=registry,
+            project=project,
+            full_feature_names=full_feature_names,
+        )
+
+    async def online_read_async(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_keys: List[EntityKeyProto],
+        requested_features: Optional[List[str]] = None,
+    ) -> List:
+        """
+        Reads features values for the given entity keys asynchronously.
+
+        Args:
+            config: The config for the current feature store.
+            table: The feature view whose feature values should be read.
+            entity_keys: The list of entity keys for which feature values should be read.
+            requested_features: The list of features that should be read.
+
+        Returns:
+            A list of the same length as entity_keys. Each item in the list is a tuple where the first
+            item is the event timestamp for the row, and the second item is a dict mapping feature names
+            to values, which are returned in proto format.
+        """
+        result = []
+        if self.online_store:
+            result = await self.online_store.online_read_async(
+                config, table, entity_keys, requested_features
+            )
+        return result
+
+    def retrieve_online_documents(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        requested_feature: str,
+        query: List[float],
+        top_k: int,
+        distance_metric: Optional[str] = None,
+    ) -> List:
+        """
+        Searches for the top-k most similar documents in the online document store.
+
+        Args:
+            distance_metric: distance metric to use for the search.
+            config: The config for the current feature store.
+            table: The feature view whose embeddings should be searched.
+            requested_feature: the requested document feature name.
+            query: The query embedding to search for.
+            top_k: The number of documents to return.
+
+        Returns:
+            A list of dictionaries, where each dictionary contains the document feature.
+        """
+        result = []
+        if self.online_store:
+            result = self.online_store.retrieve_online_documents(
+                config,
+                table,
+                requested_feature,
+                query,
+                top_k,
+                distance_metric,
+            )
+        return result
 
     def ingest_df(
         self,
@@ -139,13 +360,50 @@ class Provider(ABC):
             df: The dataframe to be persisted.
             field_mapping: A dictionary mapping dataframe column names to feature names.
         """
-        pass
+        table = pa.Table.from_pandas(df)
+        if isinstance(feature_view, OnDemandFeatureView):
+            if not field_mapping:
+                field_mapping = {}
+            table = _run_pyarrow_field_mapping(table, field_mapping)
+            join_keys = {
+                entity.name: entity.dtype.to_value_type()
+                for entity in feature_view.entity_columns
+            }
+            rows_to_write = _convert_arrow_to_proto(table, feature_view, join_keys)
 
-    def ingest_df_to_offline_store(
-        self,
-        feature_view: FeatureView,
-        df: pyarrow.Table,
-    ):
+            self.online_write_batch(
+                self.repo_config, feature_view, rows_to_write, progress=None
+            )
+        else:
+            if hasattr(feature_view, "entity_columns"):
+                join_keys = {
+                    entity.name: entity.dtype.to_value_type()
+                    for entity in feature_view.entity_columns
+                }
+            else:
+                join_keys = {}
+
+            # Note: A dictionary mapping of column names in this data
+            #   source to feature names in a feature table or view. Only used for feature
+            #   columns, not entity or timestamp columns.
+            if hasattr(feature_view, "batch_source"):
+                if feature_view.batch_source.field_mapping is not None:
+                    table = _run_pyarrow_field_mapping(
+                        table, feature_view.batch_source.field_mapping
+                    )
+            else:
+                table = _run_pyarrow_field_mapping(table, {})
+
+            if not isinstance(feature_view, BaseFeatureView):
+                for entity in feature_view.entity_columns:
+                    join_keys[entity.name] = entity.dtype.to_value_type()
+            rows_to_write = _convert_arrow_to_proto(table, feature_view, join_keys)
+
+            self.online_write_batch(
+                self.repo_config, feature_view, rows_to_write, progress=None
+            )
+
+    def ingest_df_to_offline_store(self, feature_view: FeatureView, table: pa.Table):
         """
         Persists a dataframe to the offline store.
 
@@ -153,9 +411,13 @@ class Provider(ABC):
             feature_view: The feature view to which the dataframe corresponds.
             df: The dataframe to be persisted.
         """
-        pass
+        if feature_view.batch_source.field_mapping is not None:
+            table = _run_pyarrow_field_mapping(
+                table, feature_view.batch_source.field_mapping
+            )
 
-    @abstractmethod
+        self.offline_write_batch(self.repo_config, feature_view, table, None)
+
     def materialize_single_feature_view(
         self,
         config: RepoConfig,
@@ -167,7 +429,7 @@ class Provider(ABC):
         tqdm_builder: Callable[[int], tqdm],
     ) -> None:
         """
-        Writes latest feature values in the specified time range to the online store.
+        Writes the latest feature values in the specified time range to the online store.
 
         Args:
             config: The config for the current feature store.
@@ -178,9 +440,25 @@ class Provider(ABC):
             project: Feast project to which the objects belong.
             tqdm_builder: A function to monitor the progress of materialization.
         """
-        pass
+        assert (
+            isinstance(feature_view, BatchFeatureView)
+            or isinstance(feature_view, StreamFeatureView)
+            or isinstance(feature_view, FeatureView)
+        ), f"Unexpected type for {feature_view.name}: {type(feature_view)}"
+        task = MaterializationTask(
+            project=project,
+            feature_view=feature_view,
+            start_time=start_date,
+            end_time=end_date,
+            tqdm_builder=tqdm_builder,
+        )
+        jobs = self.batch_engine.materialize(registry, [task])
+        assert len(jobs) == 1
+        if jobs[0].status() == MaterializationJobStatus.ERROR and jobs[0].error():
+            e = jobs[0].error()
+            assert e
+            raise e
 
-    @abstractmethod
     def get_historical_features(
         self,
         config: RepoConfig,
@@ -210,87 +488,18 @@ class Provider(ABC):
         Returns:
             A RetrievalJob that can be executed to get the features.
         """
-        pass
+        job = self.offline_store.get_historical_features(
+            config=config,
+            feature_views=feature_views,
+            feature_refs=feature_refs,
+            entity_df=entity_df,
+            registry=registry,
+            project=project,
+            full_feature_names=full_feature_names,
+        )
 
-    @abstractmethod
-    def online_read(
-        self,
-        config: RepoConfig,
-        table: FeatureView,
-        entity_keys: List[EntityKeyProto],
-        requested_features: Optional[List[str]] = None,
-    ) -> List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]]:
-        """
-        Reads features values for the given entity keys.
+        return job
 
-        Args:
-            config: The config for the current feature store.
-            table: The feature view whose feature values should be read.
-            entity_keys: The list of entity keys for which feature values should be read.
-            requested_features: The list of features that should be read.
-
-        Returns:
-            A list of the same length as entity_keys. Each item in the list is a tuple where the first
-            item is the event timestamp for the row, and the second item is a dict mapping feature names
-            to values, which are returned in proto format.
-        """
-        pass
-
-    @abstractmethod
-    def get_online_features(
-        self,
-        config: RepoConfig,
-        features: Union[List[str], FeatureService],
-        entity_rows: Union[
-            List[Dict[str, Any]],
-            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
-        ],
-        registry: BaseRegistry,
-        project: str,
-        full_feature_names: bool = False,
-    ) -> OnlineResponse:
-        pass
-
-    @abstractmethod
-    async def get_online_features_async(
-        self,
-        config: RepoConfig,
-        features: Union[List[str], FeatureService],
-        entity_rows: Union[
-            List[Dict[str, Any]],
-            Mapping[str, Union[Sequence[Any], Sequence[ValueProto], RepeatedValue]],
-        ],
-        registry: BaseRegistry,
-        project: str,
-        full_feature_names: bool = False,
-    ) -> OnlineResponse:
-        pass
-
-    @abstractmethod
-    async def online_read_async(
-        self,
-        config: RepoConfig,
-        table: FeatureView,
-        entity_keys: List[EntityKeyProto],
-        requested_features: Optional[List[str]] = None,
-    ) -> List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]]:
-        """
-        Reads features values for the given entity keys asynchronously.
-
-        Args:
-            config: The config for the current feature store.
-            table: The feature view whose feature values should be read.
-            entity_keys: The list of entity keys for which feature values should be read.
-            requested_features: The list of features that should be read.
-
-        Returns:
-            A list of the same length as entity_keys. Each item in the list is a tuple where the first
-            item is the event timestamp for the row, and the second item is a dict mapping feature names
-            to values, which are returned in proto format.
-        """
-        pass
-
-    @abstractmethod
     def retrieve_saved_dataset(
         self, config: RepoConfig, dataset: SavedDataset
     ) -> RetrievalJob:
@@ -304,13 +513,28 @@ class Provider(ABC):
         Returns:
             A RetrievalJob that can be executed to get the saved dataset.
         """
-        pass
+        feature_name_columns = [
+            ref.replace(":", "__") if dataset.full_feature_names else ref.split(":")[1]
+            for ref in dataset.features
+        ]
 
-    @abstractmethod
+        # ToDo: replace hardcoded value
+        event_ts_column = "event_timestamp"
+
+        return self.offline_store.pull_all_from_table_or_query(
+            config=config,
+            data_source=dataset.storage.to_data_source(),
+            join_key_columns=dataset.join_keys,
+            feature_name_columns=feature_name_columns,
+            timestamp_field=event_ts_column,
+            start_date=make_tzaware(dataset.min_event_timestamp),  # type: ignore
+            end_date=make_tzaware(dataset.max_event_timestamp + timedelta(seconds=1)),  # type: ignore
+        )
+
     def write_feature_service_logs(
         self,
         feature_service: FeatureService,
-        logs: Union[pyarrow.Table, Path],
+        logs: Union[pa.Table, str],
         config: RepoConfig,
         registry: BaseRegistry,
     ):
@@ -326,9 +550,18 @@ class Provider(ABC):
             config: The config for the current feature store.
             registry: The registry for the current feature store.
         """
-        pass
+        assert (
+            feature_service.logging_config is not None
+        ), "Logging should be configured for the feature service before calling this function"
 
-    @abstractmethod
+        self.offline_store.write_logged_features(
+            config=config,
+            data=logs,
+            source=FeatureServiceLoggingSource(feature_service, config.project),
+            logging_config=feature_service.logging_config,
+            registry=registry,
+        )
+
     def retrieve_feature_service_logs(
         self,
         feature_service: FeatureService,
@@ -350,47 +583,26 @@ class Provider(ABC):
         Returns:
             A RetrievalJob that can be executed to get the feature service logs.
         """
-        pass
+        assert (
+            feature_service.logging_config is not None
+        ), "Logging should be configured for the feature service before calling this function"
 
-    def get_feature_server_endpoint(self) -> Optional[str]:
-        """Returns endpoint for the feature server, if it exists."""
-        return None
+        logging_source = FeatureServiceLoggingSource(feature_service, config.project)
+        schema = logging_source.get_schema(registry)
+        logging_config = feature_service.logging_config
+        ts_column = logging_source.get_log_timestamp_column()
+        columns = list(set(schema.names) - {ts_column})
 
-    @abstractmethod
-    def retrieve_online_documents(
-        self,
-        config: RepoConfig,
-        table: FeatureView,
-        requested_feature: str,
-        query: List[float],
-        top_k: int,
-        distance_metric: Optional[str] = None,
-    ) -> List[
-        Tuple[
-            Optional[datetime],
-            Optional[EntityKeyProto],
-            Optional[ValueProto],
-            Optional[ValueProto],
-            Optional[ValueProto],
-        ]
-    ]:
-        """
-        Searches for the top-k most similar documents in the online document store.
+        return self.offline_store.pull_all_from_table_or_query(
+            config=config,
+            data_source=logging_config.destination.to_data_source(),
+            join_key_columns=[],
+            feature_name_columns=columns,
+            timestamp_field=ts_column,
+            start_date=make_tzaware(start_date),
+            end_date=make_tzaware(end_date),
+        )
 
-        Args:
-            distance_metric: distance metric to use for the search.
-            config: The config for the current feature store.
-            table: The feature view whose embeddings should be searched.
-            requested_feature: the requested document feature name.
-            query: The query embedding to search for.
-            top_k: The number of documents to return.
-
-        Returns:
-            A list of dictionaries, where each dictionary contains the document feature.
-        """
-        pass
-
-    @abstractmethod
     def validate_data_source(
         self,
         config: RepoConfig,
@@ -403,22 +615,9 @@ class Provider(ABC):
             config: Configuration object used to configure a feature store.
             data_source: DataSource object that needs to be validated
         """
-        pass
+        self.offline_store.validate_data_source(config=config, data_source=data_source)
 
-
-def get_provider(config: RepoConfig) -> Provider:
-    if "." not in config.provider:
-        if config.provider not in PROVIDERS_CLASS_FOR_TYPE:
-            raise errors.FeastProviderNotImplementedError(config.provider)
-
-        provider = PROVIDERS_CLASS_FOR_TYPE[config.provider]
-    else:
-        provider = config.provider
-
-    # Split provider into module and class names by finding the right-most dot.
-    # For example, provider 'foo.bar.MyProvider' will be parsed into 'foo.bar' and 'MyProvider'
-    module_name, class_name = provider.rsplit(".", 1)
-
-    cls = import_class(module_name, class_name, "Provider")
-
-    return cls(config)
+    # TODO: deprecate this, it is always None and never used
+    def get_feature_server_endpoint(self) -> Optional[str]:
+        """Returns endpoint for the feature server, if it exists."""
+        return

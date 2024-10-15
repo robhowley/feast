@@ -21,7 +21,7 @@ from feast.infra.offline_stores.contrib.spark_offline_store.spark import (
     SparkRetrievalJob,
 )
 from feast.infra.online_stores.online_store import OnlineStore
-from feast.infra.passthrough_provider import PassthroughProvider
+from feast.infra.provider import Provider
 from feast.infra.registry.base_registry import BaseRegistry
 from feast.on_demand_feature_view import OnDemandFeatureView
 from feast.protos.feast.core.FeatureView_pb2 import FeatureView as FeatureViewProto
@@ -220,7 +220,7 @@ class _SparkSerializedArtifacts:
         # load
         repo_config = dill.loads(self.repo_config_byte)
 
-        provider = PassthroughProvider(repo_config)
+        provider = Provider(repo_config)
         online_store = provider.online_store
         return feature_view, online_store, repo_config
 
