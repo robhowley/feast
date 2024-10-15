@@ -118,19 +118,19 @@ IKV_CONFIG = {
     "mount_directory": os.getenv("IKV_MOUNT_DIR", ""),
 }
 
-OFFLINE_STORE_TO_PROVIDER_CONFIG: Dict[str, Tuple[str, Type[DataSourceCreator]]] = {
-    "file": ("local", FileDataSourceCreator),
-    "bigquery": ("gcp", BigQueryDataSourceCreator),
-    "redshift": ("aws", RedshiftDataSourceCreator),
-    "snowflake": ("aws", SnowflakeDataSourceCreator),
-}
+OFFLINE_STORE_TO_PROVIDER_CONFIG: List[Type[DataSourceCreator]] = [
+    FileDataSourceCreator,
+    BigQueryDataSourceCreator,
+    RedshiftDataSourceCreator,
+    SnowflakeDataSourceCreator,
+]
 
-AVAILABLE_OFFLINE_STORES: List[Tuple[str, Type[DataSourceCreator]]] = [
-    ("local", FileDataSourceCreator),
-    ("local", DuckDBDataSourceCreator),
-    ("local", DuckDBDeltaDataSourceCreator),
-    ("local", RemoteOfflineStoreDataSourceCreator),
-    ("local", RemoteOfflineOidcAuthStoreDataSourceCreator),
+AVAILABLE_OFFLINE_STORES: List[Type[DataSourceCreator]] = [
+    FileDataSourceCreator,
+    DuckDBDataSourceCreator,
+    DuckDBDeltaDataSourceCreator,
+    RemoteOfflineStoreDataSourceCreator,
+    RemoteOfflineOidcAuthStoreDataSourceCreator,
 ]
 
 if os.getenv("FEAST_IS_LOCAL_TEST", "False") == "True":
@@ -149,9 +149,9 @@ AVAILABLE_ONLINE_STORES: Dict[
 if os.getenv("FEAST_IS_LOCAL_TEST", "False") != "True":
     AVAILABLE_OFFLINE_STORES.extend(
         [
-            ("gcp", BigQueryDataSourceCreator),
-            ("aws", RedshiftDataSourceCreator),
-            ("aws", SnowflakeDataSourceCreator),
+            BigQueryDataSourceCreator,
+            RedshiftDataSourceCreator,
+            SnowflakeDataSourceCreator,
         ]
     )
 
@@ -189,7 +189,7 @@ if full_repo_configs_module is not None:
             ) from e
 
         AVAILABLE_OFFLINE_STORES = [
-            (config.provider, config.offline_store_creator)
+            config.offline_store_creator
             for config in FULL_REPO_CONFIGS
         ]
         AVAILABLE_OFFLINE_STORES = list(set(AVAILABLE_OFFLINE_STORES))  # unique only
@@ -399,7 +399,7 @@ def construct_universal_feature_views(
 class Environment:
     name: str
     project: str
-    provider: str
+    provider: Optional[str]
     registry: RegistryConfig
     data_source_creator: DataSourceCreator
     online_store_creator: Optional[OnlineStoreCreator]
@@ -559,7 +559,6 @@ def construct_test_environment(
 
     environment_params = {
         "name": project,
-        "provider": test_repo_config.provider,
         "data_source_creator": offline_creator,
         "python_feature_server": test_repo_config.python_feature_server,
         "worker_id": worker_id,

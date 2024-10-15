@@ -188,30 +188,6 @@ Provider
 .. autoclass:: feast.infra.provider.Provider
     :members:
 
-Passthrough Provider
---------------------
-
-.. autoclass:: feast.infra.passthrough_provider.PassthroughProvider
-    :members:
-
-Local Provider
-------------------
-
-.. autoclass:: feast.infra.local.LocalProvider
-    :members:
-
-GCP Provider
-------------------
-
-.. autoclass:: feast.infra.gcp.GcpProvider
-    :members:
-
-AWS Provider
-------------------
-
-.. autoclass:: feast.infra.aws.AwsProvider
-    :members:
-
 Offline Store
 ==================
 

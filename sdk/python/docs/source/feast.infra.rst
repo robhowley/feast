@@ -35,14 +35,6 @@ feast.infra.key\_encoding\_utils module
    :undoc-members:
    :show-inheritance:
 
-feast.infra.passthrough\_provider module
-----------------------------------------
-
-.. automodule:: feast.infra.passthrough_provider
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 feast.infra.provider module
 ---------------------------
 

@@ -253,7 +253,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc):
                 offline_stores = AVAILABLE_OFFLINE_STORES
         else:
             # default offline store for testing online store dimension
-            offline_stores = [("local", FileDataSourceCreator)]
+            offline_stores = [FileDataSourceCreator]
 
         online_stores = None
         if "universal_online_stores" in markers:

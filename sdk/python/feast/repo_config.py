@@ -175,19 +175,19 @@ class RepoConfig(FeastBaseModel):
     """
 
     online_config: Any = Field(None, alias="online_store")
-    """ OnlineStoreConfig: Online store configuration (optional depending on provider) """
+    """ OnlineStoreConfig: Online store configuration (optional) """
 
     auth: Any = Field(None, alias="auth")
-    """ auth: Optional if the services needs the authentication against IDPs (optional depending on provider) """
+    """ auth: if the services needs the authentication against IDPs (optional) """
 
     offline_config: Any = Field(None, alias="offline_store")
-    """ OfflineStoreConfig: Offline store configuration (optional depending on provider) """
+    """ OfflineStoreConfig: Offline store configuration (optional) """
 
     batch_engine_config: Any = Field(None, alias="batch_engine")
-    """ BatchMaterializationEngine: Batch materialization configuration (optional depending on provider)"""
+    """ BatchMaterializationEngine: Batch materialization configuration (optional)"""
 
     feature_server: Optional[Any] = None
-    """ FeatureServerConfig: Feature server configuration (optional depending on provider) """
+    """ FeatureServerConfig: Feature server configuration (optional) """
 
     flags: Any = None
     """ Flags (deprecated field): Feature flags for experimental features """
@@ -366,10 +366,9 @@ class RepoConfig(FeastBaseModel):
     @model_validator(mode="before")
     def _validate_online_store_config(cls, values: Any) -> Any:
         # This method will validate whether the online store configurations are set correctly. This explicit validation
-        # is necessary because Pydantic Unions throw very verbose and cryptic exceptions. We also use this method to
-        # impute the default online store type based on the selected provider. For the time being this method should be
-        # considered tech debt until we can implement https://github.com/samuelcolvin/pydantic/issues/619 or a more
-        # granular configuration system
+        # is necessary because Pydantic Unions throw very verbose and cryptic exceptions. For the time being this
+        # method should be considered tech debt until we can implement https://github.com/samuelcolvin/pydantic/issues/619
+        # or a more granular configuration system
 
         # Set empty online_store config if it isn't set explicitly
         if "online_store" not in values:

@@ -191,7 +191,6 @@ The list below contains the functionality that contributors are planning to deve
   * [ ] Batch transformation (In progress. See [RFC](https://docs.google.com/document/d/1964OkzuBljifDvkV-0fakp2uaijnVzdwWNGdz7Vz50A/edit))
   * [ ] Persistent On-demand Transformations (Beta release. See [GitHub Issue](https://github.com/feast-dev/feast/issues/4376))
 * **Streaming**
-  * [x] [Custom streaming ingestion job support](https://docs.feast.dev/how-to-guides/customizing-feast/creating-a-custom-provider)
   * [x] [Push based streaming data ingestion to online store](https://docs.feast.dev/reference/data-sources/push)
   * [x] [Push based streaming data ingestion to offline store](https://docs.feast.dev/reference/data-sources/push)
 * **Deployments**

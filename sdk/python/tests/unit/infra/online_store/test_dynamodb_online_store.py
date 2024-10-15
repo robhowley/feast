@@ -22,7 +22,6 @@ from tests.utils.dynamo_table_creator import (
 
 REGISTRY = "s3://test_registry/registry.db"
 PROJECT = "test_aws"
-PROVIDER = "aws"
 TABLE_NAME = "dynamodb_online_store"
 REGION = "us-west-2"
 
@@ -37,7 +36,6 @@ def repo_config():
     return RepoConfig(
         registry=REGISTRY,
         project=PROJECT,
-        provider=PROVIDER,
         online_store=DynamoDBOnlineStoreConfig(region=REGION),
         # online_store={"type": "dynamodb", "region": REGION},
         offline_store=DaskOfflineStoreConfig(),

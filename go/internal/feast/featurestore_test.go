@@ -31,7 +31,6 @@ func TestNewFeatureStore(t *testing.T) {
 	config := registry.RepoConfig{
 		Project:  "feature_repo",
 		Registry: getRegistryPath(),
-		Provider: "local",
 		OnlineStore: map[string]interface{}{
 			"type": "redis",
 		},
@@ -46,7 +45,6 @@ func TestGetOnlineFeaturesRedis(t *testing.T) {
 	config := registry.RepoConfig{
 		Project:  "feature_repo",
 		Registry: getRegistryPath(),
-		Provider: "local",
 		OnlineStore: map[string]interface{}{
 			"type":              "redis",
 			"connection_string": "localhost:6379",

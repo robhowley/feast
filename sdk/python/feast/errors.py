@@ -186,11 +186,6 @@ class FeastProviderLoginError(FeastError):
     """Error class that indicates a user has not authenticated with their provider."""
 
 
-class FeastProviderNotImplementedError(FeastError):
-    def __init__(self, provider_name):
-        super().__init__(f"Provider '{provider_name}' is not implemented")
-
-
 class FeastRegistryNotSetError(FeastError):
     def __init__(self):
         super().__init__("Registry is not set, but is required")

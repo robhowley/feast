@@ -24,7 +24,6 @@ func TestSqliteAndFeatureRepoSetup(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, "my_project", config.Project)
 	assert.Equal(t, "data/registry.db", config.GetRegistryConfig().Path)
-	assert.Equal(t, "local", config.Provider)
 	assert.Equal(t, map[string]interface{}{
 		"path": "data/online_store.db",
 		"type": "sqlite",

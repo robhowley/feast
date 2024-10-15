@@ -30,7 +30,6 @@ online_store:
 	assert.Equal(t, "feature_repo", config.Project)
 	assert.Equal(t, dir, config.RepoPath)
 	assert.Equal(t, "data/registry.db", config.GetRegistryConfig().Path)
-	assert.Equal(t, "local", config.Provider)
 	assert.Equal(t, map[string]interface{}{
 		"type":              "redis",
 		"connection_string": "localhost:6379",
@@ -63,7 +62,6 @@ online_store:
 	assert.Equal(t, "feature_repo", config.Project)
 	assert.Equal(t, dir, config.RepoPath)
 	assert.Equal(t, "data/registry.db", config.GetRegistryConfig().Path)
-	assert.Equal(t, "local", config.Provider)
 	assert.Equal(t, map[string]interface{}{
 		"type":              "redis",
 		"connection_string": "localhost:6379",
