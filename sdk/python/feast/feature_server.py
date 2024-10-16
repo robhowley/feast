@@ -12,6 +12,7 @@ from dateutil import parser
 from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.logger import logger
 from fastapi.responses import JSONResponse
+from fastapi.concurrency import run_in_threadpool
 from google.protobuf.json_format import MessageToDict
 from prometheus_client import Gauge, start_http_server
 from pydantic import BaseModel
@@ -68,46 +69,6 @@ class MaterializeIncrementalRequest(BaseModel):
     feature_views: Optional[List[str]] = None
 
 
-def _prepare_get_online_features_request(store, body) -> dict[str, Any]:
-    body = json.loads(body)
-    full_feature_names = body.get("full_feature_names", False)
-    entity_rows = body["entities"]
-    # Initialize parameters for FeatureStore.get_online_features(...) call
-    if "feature_service" in body:
-        feature_service = store.get_feature_service(
-            body["feature_service"], allow_cache=True
-        )
-        assert_permissions(
-            resource=feature_service, actions=[AuthzedAction.READ_ONLINE]
-        )
-        features = feature_service
-    else:
-        features = body["features"]
-        all_feature_views, all_on_demand_feature_views = (
-            utils._get_feature_views_to_use(
-                store.registry,
-                store.project,
-                features,
-                allow_cache=True,
-                hide_dummy_entity=False,
-            )
-        )
-        for feature_view in all_feature_views:
-            assert_permissions(
-                resource=feature_view, actions=[AuthzedAction.READ_ONLINE]
-            )
-        for od_feature_view in all_on_demand_feature_views:
-            assert_permissions(
-                resource=od_feature_view, actions=[AuthzedAction.READ_ONLINE]
-            )
-
-    return dict(
-        features=features,
-        entity_rows=entity_rows,
-        full_feature_names=full_feature_names,
-    )
-
-
 def get_app(
     store: "feast.FeatureStore",
     registry_ttl_sec: int = DEFAULT_FEATURE_SERVER_REGISTRY_TTL,
@@ -148,35 +109,60 @@ def get_app(
     async def get_body(request: Request):
         return await request.body()
 
-    _post_get_online_features = app.post(
+    @app.post(
         "/get-online-features",
         dependencies=[Depends(inject_user_details)],
     )
-
-    async_supported = store._get_provider().async_supported
-    if async_supported.online.read:
-
-        @_post_get_online_features
-        async def get_online_features(body=Depends(get_body)):
-            response = await store.get_online_features_async(
-                **_prepare_get_online_features_request(store, body)
+    async def get_online_features(body=Depends(get_body)):
+        body = json.loads(body)
+        full_feature_names = body.get("full_feature_names", False)
+        entity_rows = body["entities"]
+        # Initialize parameters for FeatureStore.get_online_features(...) call
+        if "feature_service" in body:
+            feature_service = store.get_feature_service(
+                body["feature_service"], allow_cache=True
             )
-            # Convert the Protobuf object to JSON and return it
-            return MessageToDict(
-                response.proto, preserving_proto_field_name=True, float_precision=18
+            assert_permissions(
+                resource=feature_service, actions=[AuthzedAction.READ_ONLINE]
             )
-    else:
-
-        @_post_get_online_features
-        def get_online_features(body=Depends(get_body)):
-            response_proto = store.get_online_features(
-                **_prepare_get_online_features_request(store, body)
-            ).proto
-
-            # Convert the Protobuf object to JSON and return it
-            return MessageToDict(
-                response_proto, preserving_proto_field_name=True, float_precision=18
+            features = feature_service
+        else:
+            features = body["features"]
+            all_feature_views, all_on_demand_feature_views = (
+                utils._get_feature_views_to_use(
+                    store.registry,
+                    store.project,
+                    features,
+                    allow_cache=True,
+                    hide_dummy_entity=False,
+                )
             )
+            for feature_view in all_feature_views:
+                assert_permissions(
+                    resource=feature_view, actions=[AuthzedAction.READ_ONLINE]
+                )
+            for od_feature_view in all_on_demand_feature_views:
+                assert_permissions(
+                    resource=od_feature_view, actions=[AuthzedAction.READ_ONLINE]
+                )
+
+        read_params = dict(
+            features=features,
+            entity_rows=entity_rows,
+            full_feature_names=full_feature_names,
+        )
+
+        if store._get_provider().async_supported.online.read:
+            response = await store.get_online_features_async(**read_params)
+        else:
+            response = run_in_threadpool(
+                lambda: store.get_online_features(**read_params)
+            )
+
+        # Convert the Protobuf object to JSON and return it
+        return MessageToDict(
+            response.proto, preserving_proto_field_name=True, float_precision=18
+        )
 
     @app.post("/push", dependencies=[Depends(inject_user_details)])
     def push(body=Depends(get_body)):
