@@ -4,7 +4,7 @@ import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import pandas as pd
 import psutil
@@ -155,7 +155,7 @@ def get_app(
         if store._get_provider().async_supported.online.read:
             response = await store.get_online_features_async(**read_params)
         else:
-            response = run_in_threadpool(
+            response = await run_in_threadpool(
                 lambda: store.get_online_features(**read_params)
             )
 
