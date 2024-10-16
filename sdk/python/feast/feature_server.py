@@ -10,9 +10,9 @@ import pandas as pd
 import psutil
 from dateutil import parser
 from fastapi import Depends, FastAPI, Request, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.logger import logger
 from fastapi.responses import JSONResponse
-from fastapi.concurrency import run_in_threadpool
 from google.protobuf.json_format import MessageToDict
 from prometheus_client import Gauge, start_http_server
 from pydantic import BaseModel
