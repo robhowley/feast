@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 def get_version():
     """Returns version information of the Feast Python Package."""
-    return "0.41.0"
+    return "0.40.1"
     # try:
     #     sdk_version = version("feast")
     # except PackageNotFoundError:

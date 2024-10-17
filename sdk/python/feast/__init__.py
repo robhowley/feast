@@ -24,7 +24,7 @@ from .stream_feature_view import StreamFeatureView
 from .value_type import ValueType
 
 try:
-    __version__ = _version("feast")
+    __version__ = "0.40.1" #_version("feast")
 except PackageNotFoundError:
     # package is not installed
     pass
